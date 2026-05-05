@@ -1,0 +1,3 @@
+[submodule "SpectralBias"]
+	path = SpectralBias
+	url = git@github.com:nasimrahaman/SpectralBias.git
