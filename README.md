@@ -1,0 +1,1 @@
+# PINNs-and-spectral-bias
