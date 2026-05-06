@@ -1,3 +1,6 @@
 [submodule "SpectralBias"]
 	path = SpectralBias
 	url = git@github.com:marcogalliani/SpectralBias.git
+[submodule "ode-fit"]
+	path = ode-fit
+	url = git@github.com:marcogalliani/ode-fit.git
