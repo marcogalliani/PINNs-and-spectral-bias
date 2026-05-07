@@ -1,30 +1,18 @@
 """
 Spectral bias of PINNs vs Picard iteration on a forced linear ODE.
 
-Both methods are iterative and refine the *whole trajectory* at each step, so
-their spectral convergence can be compared directly via FFTs of successive
-iterates.  Expected contrast:
+Expected contrast:
 
   * PINN — gradient descent on a tanh MLP exhibits spectral bias: low
-    frequencies of the solution land first, high frequencies arrive much
-    later (or never within the training budget).
+    frequencies of the solution land first, high frequencies arrive much later (or never within the training budget).
 
   * Picard — z^{k+1}(t) = z0 + ∫₀ᵗ f(s, z^k(s)) ds.  Starting from the
-    constant z0, the first iterate already integrates the full forcing once,
-    so high-frequency content appears immediately and successive iterates
-    refine the *amplitude* of every frequency in lockstep.
+    constant z0, the first iterate already integrates the full forcing once, so high-frequency content appears immediately and successive iterates refine the *amplitude* of every frequency in lockstep.
 
 ODE choice — first-order linear, multi-frequency forcing:
   z' = -α z + Σ_k A_k sin(2π f_k t + φ_k)
 
-This is the cheapest ODE that still has interesting spectral content.  The
-2nd-order oscillator was rejected because its system matrix has ||A|| ≈ ω0²,
-which makes plain Picard diverge over moderate T.  Here ||A|| = α is small
-and Picard converges in ~12 iterations.
-
-Forcing is chosen so the steady-state amplitude |H(ω)| = 1/√(α²+ω²) gives
-*comparable* response at the two frequencies — otherwise one component
-dominates the FFT and the comparison loses its point.
+The Forcing is chosen so the steady-state amplitude |H(ω)| = 1/√(α²+ω²) gives *comparable* response at the two frequencies — otherwise one component dominates the FFT and the comparison loses its point.
 """
 
 import sys
@@ -40,17 +28,14 @@ from scipy.integrate import solve_ivp
 
 from src.PINNs import PINN, train_pinn, plot_spectral_dynamics, plot_loss_curves
 from src.numerical_solvers import picard_solve
-from src.spectral_analysis import compute_fft
+from src.spectral_analysis import compute_fft, plot_ntk_analysis
 
 sns.set_theme(style="whitegrid")
 torch.manual_seed(42)
 np.random.seed(42)
 
 
-# =============================================================================
 # ODE
-# =============================================================================
-
 class ForcedFirstOrderODE:
     """
     z' = -α z + Σ_k A_k sin(2π f_k t + φ_k)
@@ -78,10 +63,7 @@ class ForcedFirstOrderODE:
         return -self.alpha * z + F
 
 
-# =============================================================================
-# Static comparison plot
-# =============================================================================
-
+# Plot utils
 def plot_solution_comparison(t, solutions, labels, colors, opt, save_path=None):
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     fig.suptitle(f"Final solutions  -  forcing frequencies: {opt.freqs} Hz",
@@ -108,18 +90,16 @@ def plot_solution_comparison(t, solutions, labels, colors, opt, save_path=None):
     plt.close(fig)
 
 
-# =============================================================================
-# Main
-# =============================================================================
 
 def main():
     opt = Namespace()
 
     # ODE
     opt.alpha = 1.0
-    opt.freqs = [1.0, 3.0]
-    opt.amps = [1.0, 1.0]            # equal forcing energy; |H(ω)| then sets the spectrum
-    opt.phases = [0.0, 0.0]
+    opt.freqs = [1.0, 3.0, 5.0, 10.0]
+    opt.amps = [1.0, 1.0, 1.0, 1.0]            
+    # equal forcing energy; |H(ω)| then sets the spectrum
+    opt.phases = [0.0, 0.0, 0.0, 0.0]
     opt.y0 = [0.0]
 
     # Time domain
@@ -127,16 +107,17 @@ def main():
     opt.N_POINTS = 200               # >> 2·f_max·T = 12
 
     # PINN — small enough for fast iteration, large enough to converge
-    opt.WIDTH = 128
+    opt.WIDTH = 512
     opt.DEPTH = 4
     opt.NUM_ITER = 5_000
     opt.REC_FRQ = 100
     opt.LR = 1e-3
     opt.N_COLLOC = 512
-    opt.IC_WEIGHT = 100.0            # unused under hard_ic, kept for API parity
+    # unused under hard_ic
+    opt.IC_WEIGHT = 100.0            
 
     # Picard
-    opt.PICARD_ITERS = 10
+    opt.PICARD_ITERS = 20
 
     if torch.cuda.is_available():
         opt.DEVICE = torch.device("cuda")
@@ -176,6 +157,7 @@ def main():
         hard_ic=True,
         rec_frq=opt.REC_FRQ,
         t_eval_np=t_eval,
+        save_snapshots=True,
         verbose=True,
     )
     # hard_ic reparametrisation z(t) = z0 + (t - t0) NN(t) must be applied at
@@ -219,6 +201,21 @@ def main():
     )
 
     plot_loss_curves(frames, save_path="pinn_loss.png")
+
+    print("->NTK analysis")
+    snapshots = [(f.iter_num, f.model_state) for f in frames]
+    plot_ntk_analysis(
+        model,
+        t_eval,
+        sample_rate,
+        freqs=opt.freqs,
+        snapshots=snapshots,
+        ntk_subsample=5,
+        device=opt.DEVICE,
+        transform=lambda t, z: t * z,       # hard_ic: actual trajectory = t · NN(t)
+        title="NTK Analysis — PINN",
+        save_path="ntk_analysis.png",
+    )
 
     # Summary
     print("\n=== Spectral amplitude at forcing frequencies ===")

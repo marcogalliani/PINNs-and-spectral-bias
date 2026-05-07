@@ -14,7 +14,7 @@ can be plugged in without touching the training loop.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
 import numpy as np
@@ -36,6 +36,8 @@ class TrainingFrame:
     loss: float
     phys_loss: float
     ic_loss: float
+    model_state: Optional[dict] = field(default=None, repr=False)
+    # CPU-side copy of state_dict; populated only when save_snapshots=True
 
 class FourierEmbedding(nn.Module):
     """
@@ -184,6 +186,7 @@ def train_pinn(
     rec_frq: int = 200,
     lr_decay: float = 0.9995,
     t_eval_np: Optional[np.ndarray] = None,
+    save_snapshots: bool = False,
     verbose: bool = True,
 ) -> list[TrainingFrame]:
 
@@ -225,7 +228,11 @@ def train_pinn(
                     pred = raw.cpu().numpy()
             model.train()
 
-            frames.append(TrainingFrame(it, pred, total.item(), phys, ic))
+            snapshot = None
+            if save_snapshots:
+                snapshot = {k: v.detach().cpu().clone()
+                            for k, v in model.state_dict().items()}
+            frames.append(TrainingFrame(it, pred, total.item(), phys, ic, snapshot))
 
             if verbose and n_iter > 0 and it % max(1, n_iter // 5) == 0:
                 print(
