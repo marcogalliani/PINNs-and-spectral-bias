@@ -219,7 +219,10 @@ def train_pinn(
             pred: Optional[np.ndarray] = None
             if t_eval is not None:
                 with torch.no_grad():
-                    pred = model(t_eval).cpu().numpy()
+                    raw = model(t_eval)
+                    if hard_ic:
+                        raw = y0_tensor + (t_eval - t0_tensor[0, 0]) * raw
+                    pred = raw.cpu().numpy()
             model.train()
 
             frames.append(TrainingFrame(it, pred, total.item(), phys, ic))
@@ -240,74 +243,72 @@ def plot_spectral_dynamics(
     freqs,
     sample_rate,
     *,
-    max_freq_show=None,
+    reference=None,
     title="Spectral Dynamics",
     iter_label="Iteration",
     save_path=None,
 ):
     """
-    Plot the spectrum of the first state variable across iterations.
+    Track the amplitude at each forcing frequency across iterations.
 
-    Works for any iterative solver that exposes a sequence of trajectories on
-    the same time grid: PINN training snapshots, Picard iterates, etc.
+    For each iterate in `predictions`, extracts the FFT amplitude at every
+    frequency in `freqs` and plots two panels:
+      - left  : amplitude at each forcing frequency over iterations
+                (dashed horizontal lines = reference amplitudes when provided)
+      - right : |reference_amplitude - learned_amplitude| over iterations
+                (only shown when `reference` is provided)
 
     Parameters
     ----------
     predictions : sequence of ndarray (N_eval, n_vars)
-    iter_nums : sequence of int, same length as predictions
-    freqs : sequence of float — forcing frequencies, marked on the heatmaps and
-        used as the per-frequency learning curves on the right panel.
-    sample_rate : float — samples per second of the evaluation grid.
+    iter_nums   : sequence of int, same length as predictions
+    freqs       : sequence of float — the frequencies to track [Hz]
+    sample_rate : float — samples per second of the evaluation grid
+    reference   : ndarray (N_eval, n_vars) or None — ground-truth trajectory
+                  used to compute target amplitudes and amplitude errors
     """
-    if max_freq_show is None:
-        max_freq_show = max(freqs) * 1.8
-
-    dynamics = []
-    for pred in predictions:
-        frqs, spec = compute_fft(pred[:, 0], sample_rate)
-        mask = frqs <= max_freq_show
-        dynamics.append(spec[mask])
-    dynamics = np.array(dynamics)
-    frqs_trimmed = frqs[mask]
     iter_nums = np.asarray(iter_nums)
-
-    col_max = dynamics.max(axis=0, keepdims=True)
-    col_max[col_max == 0] = 1.0
-    norm_dynamics = dynamics / col_max
-
-    cmap = sns.cubehelix_palette(8, start=0.5, rot=-0.75, reverse=True, as_cmap=True)
-    fig, axes = plt.subplots(1, 3, figsize=(17, 5))
-    fig.suptitle(title, fontsize=13)
-
-    n_frames, n_freqs = dynamics.shape
-    x_tick_pos = np.linspace(0, n_freqs - 1, min(10, n_freqs), dtype=int)
-
-    for ax, data, sub_title, cbar_label in [
-        (axes[0], dynamics,      "Spectrum (raw amplitude)",                                "|FFT|"),
-        (axes[1], norm_dynamics, "Spectrum (column-normalised)\nRed: forcing frequencies", "normalised amplitude"),
-    ]:
-        im = ax.imshow(data, aspect="auto", origin="upper", cmap=cmap,
-                       extent=[0, n_freqs, iter_nums[-1], iter_nums[0]])
-        fig.colorbar(im, ax=ax, label=cbar_label, fraction=0.046, pad=0.04)
-
-        ax.set_xticks(x_tick_pos + 0.5)
-        ax.set_xticklabels([f"{frqs_trimmed[i]:.1f}" for i in x_tick_pos], fontsize=8)
-        ax.set_yticks(np.linspace(iter_nums[0], iter_nums[-1], min(5, n_frames)))
-        ax.set_xlabel("Frequency [Hz]")
-        ax.set_ylabel(iter_label)
-        ax.set_title(sub_title)
-        for f in freqs:
-            x_idx = np.argmin(np.abs(frqs_trimmed - f))
-            ax.axvline(x_idx, color="red", linestyle="--", linewidth=1.2, alpha=0.7)
-
     palette = sns.color_palette("husl", len(freqs))
+
+    amp_curves = {f: [] for f in freqs}
+    for pred in predictions:
+        frqs_fft, spec = compute_fft(pred[:, 0], sample_rate)
+        for f in freqs:
+            amp_curves[f].append(float(spec[np.argmin(np.abs(frqs_fft - f))]))
+
+    ref_amps = {}
+    if reference is not None:
+        frqs_ref, spec_ref = compute_fft(reference[:, 0], sample_rate)
+        for f in freqs:
+            ref_amps[f] = float(spec_ref[np.argmin(np.abs(frqs_ref - f))])
+
+    n_panels = 2 if reference is not None else 1
+    fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 4.5))
+    if n_panels == 1:
+        axes = [axes]
+    fig.suptitle(title, fontsize=12)
+
+    ax = axes[0]
     for f, col in zip(freqs, palette):
-        idx = np.argmin(np.abs(frqs_trimmed - f))
-        axes[2].plot(iter_nums, dynamics[:, idx], label=f"{f} Hz", color=col)
-    axes[2].set_xlabel(iter_label)
-    axes[2].set_ylabel("|FFT| at forcing frequency")
-    axes[2].set_title("Per-frequency Learning Curves")
-    axes[2].legend(fontsize=8)
+        ax.plot(iter_nums, amp_curves[f], label=f"{f} Hz", color=col)
+    if ref_amps:
+        for f, col in zip(freqs, palette):
+            ax.axhline(ref_amps[f], color=col, linestyle="--", linewidth=1, alpha=0.5)
+    ax.set_xlabel(iter_label)
+    ax.set_ylabel("|FFT| at forcing frequency")
+    ax.set_title("Amplitude at forcing frequencies\n(dashed = reference)")
+    ax.legend(fontsize=8)
+
+    if reference is not None:
+        ax = axes[1]
+        for f, col in zip(freqs, palette):
+            errs = [abs(a - ref_amps[f]) for a in amp_curves[f]]
+            ax.plot(iter_nums, errs, label=f"{f} Hz", color=col)
+        ax.set_xlabel(iter_label)
+        ax.set_ylabel("|ref − learned| amplitude")
+        ax.set_title("Amplitude error at forcing frequencies")
+        ax.set_yscale("log")
+        ax.legend(fontsize=8)
 
     plt.tight_layout()
     if save_path:

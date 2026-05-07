@@ -129,8 +129,8 @@ def main():
     # PINN — small enough for fast iteration, large enough to converge
     opt.WIDTH = 128
     opt.DEPTH = 4
-    opt.NUM_ITER = 10_000
-    opt.REC_FRQ = 200
+    opt.NUM_ITER = 5_000
+    opt.REC_FRQ = 100
     opt.LR = 1e-3
     opt.N_COLLOC = 512
     opt.IC_WEIGHT = 100.0            # unused under hard_ic, kept for API parity
@@ -178,9 +178,12 @@ def main():
         t_eval_np=t_eval,
         verbose=True,
     )
+    # hard_ic reparametrisation z(t) = z0 + (t - t0) NN(t) must be applied at
+    # eval time too — model(t) alone returns the raw NN output.
     with torch.no_grad():
         t_tensor = torch.tensor(t_eval, dtype=torch.float32, device=opt.DEVICE).view(-1, 1)
-        y_pinn = model(t_tensor).cpu().numpy()
+        y0_t = torch.tensor([opt.y0], dtype=torch.float32, device=opt.DEVICE)
+        y_pinn = (y0_t + t_tensor * model(t_tensor)).cpu().numpy()
 
     # Plots
     print("Plotting...")
@@ -198,6 +201,7 @@ def main():
         [f.iter_num for f in frames],
         opt.freqs,
         sample_rate,
+        reference=y_ref,
         title="PINN — Spectral Dynamics During Training",
         iter_label="Training Iteration",
         save_path="pinn_spectral_dynamics.png",
@@ -208,6 +212,7 @@ def main():
         list(range(len(picard_iterates))),
         opt.freqs,
         sample_rate,
+        reference=y_ref,
         title="Picard — Spectral Dynamics Across Iterations",
         iter_label="Picard Iteration",
         save_path="picard_spectral_dynamics.png",
