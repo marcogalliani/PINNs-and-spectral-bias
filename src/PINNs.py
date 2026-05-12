@@ -323,6 +323,153 @@ def plot_spectral_dynamics(
     plt.close(fig)
 
 
+def compute_pinn_residuals(
+    frames: list[TrainingFrame],
+    model: "PINN",
+    rhs_torch: Callable,
+    t_eval: np.ndarray,
+    y0: Sequence[float],
+    *,
+    hard_ic: bool = True,
+    device=None,
+) -> list[np.ndarray]:
+    """
+    Compute u(t;θ) = ẑ'(t;θ) − F(t, ẑ(t;θ)) for every snapshot in frames.
+
+    Returns a list of (N, n_vars) arrays, one per frame that has a saved
+    model_state.  Frames without a snapshot contribute None.
+    """
+    if device is None:
+        device = next(model.parameters()).device
+
+    saved_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+    t_t  = torch.tensor(t_eval, dtype=torch.float32, device=device).view(-1, 1)
+    y0_t = torch.tensor([y0],   dtype=torch.float32, device=device)
+
+    residuals: list[np.ndarray] = []
+    for frame in frames:
+        if frame.model_state is None:
+            residuals.append(None)
+            continue
+
+        model.load_state_dict(frame.model_state)
+        model.eval()
+
+        t_in = t_t.clone().detach().requires_grad_(True)
+        if hard_ic:
+            z = y0_t + t_in * model(t_in)          # t0 = 0 assumed
+        else:
+            z = model(t_in)
+
+        n_vars = z.shape[1]
+        dz_dt = torch.cat([
+            torch.autograd.grad(
+                z[:, i].sum(), t_in,
+                create_graph=False,
+                retain_graph=(i < n_vars - 1),
+            )[0]
+            for i in range(n_vars)
+        ], dim=1)
+
+        with torch.no_grad():
+            F_val = rhs_torch(t_in.detach(), z.detach())
+
+        residuals.append((dz_dt.detach() - F_val).cpu().numpy())
+
+    model.load_state_dict(saved_state)
+    model.eval()
+    return residuals
+
+
+def plot_residual_dynamics(
+    residuals: list[np.ndarray],
+    iter_nums,
+    t_eval: np.ndarray,
+    freqs,
+    sample_rate: float,
+    *,
+    title: str = "PINN — ODE Residual u(t;θ) Dynamics",
+    save_path=None,
+):
+    """
+    Three-panel visualisation of the ODE residual u(t;θ) = ẑ' − F across
+    training, mirroring the spectral-dynamics plots of the R data-smoothing
+    script.
+
+    Panel (left) — Amplitude of |FFT(u)| at each forcing frequency vs
+        training iteration.  Spectral bias appears as high frequencies
+        decaying more slowly than low ones.
+
+    Panel (centre) — Full spectrum |FFT(u)| at the final iterate, with
+        forcing frequencies marked.  Shows which residual components remain.
+
+    Panel (right) — Time-domain u(t;θ) at three snapshots (first, middle,
+        last) to show how the residual waveform collapses during training.
+    """
+    valid = [(it, r) for it, r in zip(iter_nums, residuals) if r is not None]
+    if not valid:
+        return
+    iters, res_list = zip(*valid)
+    iters    = np.asarray(iters)
+    palette  = sns.color_palette("husl", len(freqs))
+
+    # Spectral amplitude at forcing freqs across iterations
+    amp_curves = {f: [] for f in freqs}
+    for r in res_list:
+        frqs_k, spec_k = compute_fft(r[:, 0], sample_rate)
+        for f in freqs:
+            amp_curves[f].append(float(spec_k[np.argmin(np.abs(frqs_k - f))]))
+
+    # Final spectrum
+    frqs_final, spec_final = compute_fft(res_list[-1][:, 0], sample_rate)
+
+    # Snapshot indices for time-domain panel
+    snap_idx = [0, len(res_list) // 2, len(res_list) - 1]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    fig.suptitle(title, fontsize=12)
+
+    # Left — spectral dynamics
+    ax = axes[0]
+    for f, col in zip(freqs, palette):
+        ax.plot(iters, amp_curves[f], label=f"{f} Hz", color=col, linewidth=1.2)
+    ax.set_xlabel("Training iteration")
+    ax.set_ylabel("|FFT(u)| at forcing frequency")
+    ax.set_yscale("log")
+    ax.set_title("Spectral dynamics of residual\n(spectral bias → high freq decays last)")
+    ax.legend(fontsize=8)
+
+    # Centre — final residual spectrum
+    ax = axes[1]
+    mask = frqs_final <= max(freqs) * 1.5
+    ax.plot(frqs_final[mask], spec_final[mask], color="steelblue", linewidth=1.2)
+    for f, col in zip(freqs, palette):
+        ax.axvline(f, color=col, linestyle=":", linewidth=0.8, alpha=0.7)
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel("|FFT(u)|")
+    ax.set_title("Final residual spectrum")
+
+    # Right — time-domain snapshots
+    ax = axes[2]
+    snap_palette = sns.color_palette("Blues_d", len(snap_idx))
+    for idx, col in zip(snap_idx, snap_palette):
+        it  = iters[idx]
+        r   = res_list[idx]
+        ax.plot(t_eval, r[:, 0], color=col, alpha=0.85, linewidth=1.1,
+                label=f"iter {it}")
+    ax.axhline(0, color="black", linewidth=0.6, linestyle="--")
+    ax.set_xlabel("t")
+    ax.set_ylabel("u(t;θ)")
+    ax.set_title("Residual waveform (first / mid / last)")
+    ax.legend(fontsize=8)
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_loss_curves(frames, save_path=None):
     iter_nums = [f.iter_num for f in frames]
     fig, ax = plt.subplots(figsize=(8, 4))

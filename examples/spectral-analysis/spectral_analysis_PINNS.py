@@ -26,7 +26,8 @@ import seaborn as sns
 from argparse import Namespace
 from scipy.integrate import solve_ivp
 
-from src.PINNs import PINN, train_pinn, plot_spectral_dynamics, plot_loss_curves
+from src.PINNs import (PINN, train_pinn, plot_spectral_dynamics, plot_loss_curves,
+                       compute_pinn_residuals, plot_residual_dynamics)
 from src.numerical_solvers import picard_solve
 from src.spectral_analysis import compute_fft, plot_ntk_analysis
 
@@ -201,6 +202,21 @@ def main():
     )
 
     plot_loss_curves(frames, save_path="pinn_loss.png")
+
+    print("-> Residual dynamics...")
+    residuals = compute_pinn_residuals(
+        frames, model, ode.rhs_torch, t_eval, opt.y0,
+        hard_ic=True, device=opt.DEVICE,
+    )
+    plot_residual_dynamics(
+        residuals,
+        [f.iter_num for f in frames],
+        t_eval,
+        opt.freqs,
+        sample_rate,
+        title="PINN — ODE Residual u(t;θ) Dynamics",
+        save_path="pinn_residual_dynamics.png",
+    )
 
     print("->NTK analysis")
     snapshots = [(f.iter_num, f.model_state) for f in frames]

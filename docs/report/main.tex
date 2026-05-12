@@ -1,13 +1,16 @@
 \documentclass{article}
 \usepackage{comment}
 \usepackage{authblk}
-\usepackage{graphicx} 
+\usepackage{graphicx}
 \usepackage{hyperref}
+\usepackage{amsmath, amsthm, amssymb}
 
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}{Remark}
 
 \title{Spectral Bias in Physics-Informed Neural Networks}
 \author{Nicola De March, Marco Galliani}
-
 
 \date{\today}
 
@@ -15,27 +18,359 @@
 
 \maketitle
 
-
 \begin{abstract}
-    
+
 \end{abstract}
 
+% ---------------------------------------------------------------------------
 \section{Introduction}
 
 
+% ---------------------------------------------------------------------------
 \section{Models}
 
 \subsection{Neural Networks}
+
+A \emph{multilayer perceptron} (MLP) of depth $L$ and width $n$ is a function
+$f(\,\cdot\,;\theta):\mathbb{R}^{d}\to\mathbb{R}^{m}$ defined by the
+composition
+\begin{equation}
+    f(x;\theta)
+    = W_{L}\,z^{(L-1)}+b_{L},
+    \qquad
+    z^{(\ell)} = \sigma\!\left(W_{\ell}\,z^{(\ell-1)}+b_{\ell}\right),
+    \quad \ell=1,\ldots,L-1,
+\end{equation}
+with $z^{(0)}=x$, weight matrices $W_{\ell}$ and bias vectors $b_{\ell}$
+collected in $\theta=\{W_{\ell},b_{\ell}\}_{\ell=1}^{L}$, and pointwise
+nonlinearity $\sigma$.  The total number of parameters is
+$|\theta|=\sum_{\ell}(n_{\ell-1}+1)n_{\ell}$.
+
 \subsection{Physics-Informed Neural Networks}
 
-\subsection{An excursus: ODE data smoothing}
-\subsubsection{NNs and optimal control}
+Consider the initial-value problem (IVP)
+\begin{equation}
+    z'(t)=\mathcal{F}(t,z(t)),\quad t\in[t_0,T],\qquad z(t_0)=z_0.
+\end{equation}
+A \emph{physics-informed neural network} (PINN) \cite{raissi2019} approximates
+the solution by an MLP $\hat{z}(t;\theta)$ trained to minimise
+\begin{equation}
+    \mathcal{L}(\theta)
+    = \underbrace{\frac{1}{N}\sum_{i=1}^{N}
+        \left\|\hat{z}'(t_i;\theta)-\mathcal{F}(t_i,\hat{z}(t_i;\theta))\right\|^{2}}_{\mathcal{L}_{\mathrm{phys}}}
+    + \lambda\underbrace{\left\|\hat{z}(t_0;\theta)-z_0\right\|^{2}}_{\mathcal{L}_{\mathrm{IC}}},
+\end{equation}
+where the derivative $\hat{z}'$ is computed via automatic differentiation and
+$\{t_i\}_{i=1}^{N}$ are \emph{collocation points} sampled in $[t_0,T]$.
+The IC can alternatively be enforced exactly through the reparametrisation
+$\hat{z}(t;\theta) = z_0 + (t-t_0)\,f(t;\theta)$, which satisfies
+$\hat{z}(t_0)=z_0$ by construction and removes $\mathcal{L}_{\mathrm{IC}}$
+from the loss.
 
+\subsection{An excursus: ODE data smoothing}\label{sec:smoothing}
+
+Given noisy observations $\{(t_j,y_j)\}$ of a trajectory governed by an ODE, a principled alternative to PINN regression
+is to augment the dynamics with an additive \emph{control} $u:[t_0,T]\to
+\mathbb{R}^m$ and write the estimation as an Optimal Control Problem (OCP):
+
+\begin{equation}\label{eq:inner}
+    \begin{aligned}
+        &\min_{u}\;J(u,\theta)
+        = \sum_{j}\bigl\|y_j - y(t_j)\bigr\|^2
+        + \lambda\int_{t_0}^{T}\|u(t)\|^2\,\mathrm{d}t, \\
+        &\text{s.t.}\;
+        \begin{cases}
+            \dot{y}(t) = \mathcal{F}(t,y(t))+u(t),\\
+            y(t_0)=y_0.
+        \end{cases}
+    \end{aligned}
+\end{equation}
+
+The control $u$ acts as a nonparametric correction that absorbs model
+mismatch and measurement noise, while the $L^2$ penalty keeps it regular.
+
+\paragraph{Optimality system.}
+Applying the Pontryagin minimum principle to \eqref{eq:inner}, the optimal
+triple $(y,p,u)$ satisfies
+\begin{equation}
+    \begin{cases}
+        \dot{y}(t)  = \mathcal{F}(t,y(t))+u(t), &y(t_0)=y_0,\\[4pt]
+        -\dot{p}(t) = \dfrac{\partial \mathcal{F}}{\partial y}^{\!\top}(t,y(t),)\,p(t)
+                      + 2\displaystyle\sum_{j}\bigl(y_j-y(t_j)\bigr)\delta(t-t_j), &p(T)=0,\\[4pt]
+        u(t) + \dfrac{1}{2\lambda}\,p(t) = 0.
+    \end{cases}
+\end{equation}
+The last condition gives $u^*(t)=-p(t)/(2\lambda)$, so the adjoint $p$ entirely determines the optimal control.  In practice the system is solved iteratively: a forward ODE integration yields $y$, a backward integration yields $p$, and $u$ is updated accordingly.
+
+\subsubsection{The relationship between NNs training and Optimal Control}
+
+Training a deep neural network can be cast as a \emph{discrete-time optimal
+control problem} \cite{li2018oc}.  Identify the layer index $t=0,\ldots,L-1$
+with time, the hidden activations $x_{s,t}\in\mathbb{R}^{d_t}$ of sample $s$
+with the state, and the weight matrix $\theta_t$ at layer $t$ with the control.
+The forward propagation rule
+\begin{equation}
+    x_{s,t+1} = f_t(x_{s,t},\theta_t),\qquad x_{s,0}=x_{s},
+\end{equation}
+defines the system dynamics, and the empirical loss
+\begin{equation}
+    J(\boldsymbol\theta)
+    = \frac{1}{S}\sum_{s=1}^{S}\Phi_s(x_{s,L})
+    + \frac{1}{S}\sum_{s=1}^{S}\sum_{t=0}^{L-1}L_t(x_{s,t},\theta_t)
+\end{equation}
+plays the role of a terminal cost plus running regularisation.
+
+\paragraph{Pontryagin's maximum principle (PMP).}
+Introducing the co-state $p_{s,t}$ through the backward recursion
+\begin{equation}
+    p_{s,t} = \nabla_{x}H_t(x_{s,t},p_{s,t+1},\theta_t),\qquad
+    p_{s,L} = -\tfrac{1}{S}\nabla\Phi_s(x_{s,L}),
+\end{equation}
+with Hamiltonian $H_t(x,p,\theta):=p\cdot f_t(x,\theta)-\tfrac{1}{S}L_t(x,\theta)$,
+necessary conditions for an optimal $\boldsymbol\theta^*$ require that
+\begin{equation}
+    \theta_t^* = \arg\max_{\theta\in\Theta_t}\sum_{s=1}^{S}
+                 H_t(x_{s,t},p_{s,t+1},\theta),
+                 \qquad t=0,\ldots,L-1.
+\end{equation}
+The co-state equation is precisely the \emph{backward pass}: when the
+activation $f_t$ is an affine layer and $\Theta_t=\mathbb{R}^{d_t\times
+d_{t+1}}$, the Hamiltonian condition reduces to $\nabla_{\theta_t}J=0$,
+recovering standard backpropagation.  The PMP viewpoint is strictly more
+general: it applies to \emph{non-differentiable} or \emph{constrained}
+admissible sets $\Theta_t$, such as binary $\{-1,+1\}$ or ternary
+$\{-1,0,+1\}$ weights, where gradient updates are infeasible.
+
+\paragraph{Method of Successive Approximations (MSA).}
+The PMP conditions define three coupled manifolds in
+$(\boldsymbol\theta,\mathbf{x},\mathbf{p})$-space; the MSA solves them by
+alternating projections:
+\begin{enumerate}
+    \item \emph{Forward pass}: integrate $x_{s,t+1}=f_t(x_{s,t},\theta_t^k)$
+          for all $s$.
+    \item \emph{Backward pass}: integrate the co-state recursion to obtain
+          $p_{s,t}^k$.
+    \item \emph{Hamiltonian maximisation}: update
+          $\theta_t^{k+1}=\arg\max_{\theta\in\Theta_t}\sum_s
+          H_t(x_{s,t},p_{s,t+1}^k,\theta)$.
+\end{enumerate}
+This decouples the weight update across layers, allows parallelisation, and
+handles non-smooth admissible sets by solving the maximisation step exactly or
+approximately without any gradient of $J$ with respect to $\theta$.
+
+\paragraph{The PINN loss as a co-state matching condition.}
+Consider the simplest case: a one-hidden-layer MLP with scalar input $t_i$,
+hidden activations $x_{i,1}=\sigma(W_1 t_i+b_1)\in\mathbb{R}^n$, and scalar
+output $x_{i,2}=W_2 x_{i,1}+b_2\in\mathbb{R}$.  Identify each collocation
+point $i$ with a sample and set $x_{i,0}=t_i$.  The Li--Hao co-state
+recursion initialised at the output with $p_{i,2}=1$ propagates backward as
+\begin{align}
+    p_{i,1} &= \left(\frac{\partial x_{i,2}}{\partial x_{i,1}}\right)^{\!\top}
+               p_{i,2} = W_2^{\top}, \\[4pt]
+    p_{i,0} &= \left(\frac{\partial x_{i,1}}{\partial x_{i,0}}\right)^{\!\top}
+               p_{i,1}
+             = W_1^{\top}\,\mathrm{diag}\!\left(\sigma'(W_1 t_i+b_1)\right)W_2^{\top}
+             = \hat{z}'(t_i;\theta).
+\end{align}
+The co-state at the \emph{input} layer is exactly the time-derivative of the
+network output — the same quantity that automatic differentiation computes for
+the PINN physics residual.
+
+In standard supervised learning the terminal cost depends only on the network
+output: $\Phi_i(x_{i,2})=\|x_{i,2}-y_i\|^2$.  The PINN replaces this with a
+cost that depends on \emph{both} the output and the co-state:
+\begin{equation}
+    \Phi_i\!\left(x_{i,2},\,p_{i,0}\right)
+    = \bigl(p_{i,0} - \mathcal{F}(t_i,\,x_{i,2})\bigr)^2.
+\end{equation}
+Minimising the physics loss is therefore equivalent to driving the co-state at
+the input layer to match the ODE right-hand side $\mathcal{F}$.  Because the
+loss itself depends on $p_{i,0}$, computing weight gradients requires
+differentiating through the backward pass that produced $\hat{z}'$ — a nested
+differentiation absent in ordinary supervised learning.
+
+\paragraph{PINN as a parametric ODE data-smoothing problem.}
+Any PINN trajectory $\hat{z}(t;\theta)$ does not satisfy the ODE exactly; it
+satisfies instead the \emph{controlled} ODE from Section~\ref{sec:smoothing}
+with control equal to the physics residual:
+\begin{equation}
+    \hat{z}'(t;\theta)
+    = \mathcal{F}\bigl(t,\hat{z}(t;\theta)\bigr)
+    + \underbrace{\bigl[\hat{z}'(t;\theta)-\mathcal{F}(t,\hat{z}(t;\theta))\bigr]}_{=:\,u(t;\theta)}.
+\end{equation}
+The PINN loss is therefore the discretised $L^2$ norm of this control:
+\begin{equation}
+    \mathcal{L}(\theta)
+    = \frac{1}{N}\sum_{i=1}^{N}\|u(t_i;\theta)\|^2.
+\end{equation}
+The inner problem of ODE data smoothing minimises the same quantity
+$\lambda\|u\|^2_{L^2}$ over \emph{all} square-integrable functions.  The two
+approaches are thus the same objective over different search spaces:
+the ODE-smoothing approach is \emph{nonparametric} — $u$ is a free function
+found via the Pontryagin optimality system — while the PINN approach is
+\emph{parametric} — $u$ is constrained to the residual manifold
+$\{u(\cdot\,;\theta):\theta\in\mathbb{R}^P\}$ and minimised by gradient
+descent on the weights.  This distinction has a direct consequence for
+spectral bias: the network cannot produce arbitrarily high-frequency controls,
+so high-frequency residual components persist throughout training, while the
+nonparametric ODE-smoothing control can absorb any frequency from the first
+iteration.
+
+% ---------------------------------------------------------------------------
 \section{Spectral Bias}
+
 \subsection{Neural Tangent Kernel}
+
+\begin{definition}[Neural Tangent Kernel]
+    Let $f(\,\cdot\,;\theta):\mathbb{R}^{d}\to\mathbb{R}^{m}$ be an MLP with
+    parameters $\theta\in\mathbb{R}^{P}$.  The \emph{neural tangent kernel}
+    (NTK) is the positive semi-definite kernel
+    \begin{equation}
+        K(x,x';\theta)
+        = \nabla_{\theta}f(x;\theta)^{\top}\nabla_{\theta}f(x';\theta)
+        \;\in\;\mathbb{R}^{m\times m}.
+    \end{equation}
+    Given a finite set of inputs $\{x_i\}_{i=1}^{N}$, the associated
+    \emph{empirical NTK matrix} $\mathbf{K}(\theta)\in\mathbb{R}^{Nm\times Nm}$
+    has blocks $\mathbf{K}_{ij}=K(x_i,x_j;\theta)$.
+    For scalar output ($m=1$) this reduces to the $N\times N$ Gram matrix of
+    parameter gradients
+    \begin{equation}
+        \mathbf{K}_{ij}
+        = \nabla_{\theta}f(x_i;\theta)\cdot\nabla_{\theta}f(x_j;\theta).
+    \end{equation}
+\end{definition}
+
+\begin{theorem}[Infinite-width limit, \cite{jacot2018}]
+    As the width $n\to\infty$ (with appropriate initialisation and
+    parametrisation), $\mathbf{K}(\theta)$ converges in probability to a
+    deterministic kernel $\mathbf{K}^{\infty}$ and remains \emph{constant}
+    throughout gradient-descent training.
+\end{theorem}
+
+\paragraph{Training dynamics in the NTK regime.}
+Under the frozen-kernel approximation and a mean-squared-error loss on outputs
+$\{y_i\}$, the training error $e(t)=f(\mathbf{x};\theta(t))-\mathbf{y}$
+evolves as
+\begin{equation}
+    \dot{e}(t) = -\eta\,\mathbf{K}^{\infty}\,e(t).
+\end{equation}
+Decomposing $e(0)$ in the eigenbasis of $\mathbf{K}^{\infty}$ with eigenpairs
+$(\lambda_k,u_k)$, the projection onto the $k$-th mode decays as
+\begin{equation}
+    \langle e(t), u_k\rangle = e^{-\eta\lambda_k t}\,\langle e(0),u_k\rangle.
+\end{equation}
+Modes with \emph{large} eigenvalue $\lambda_k$ are learned quickly; modes with
+\emph{small} eigenvalue are learned slowly.
+
+\begin{remark}[Spectral bias]
+    For standard MLPs with smooth activations, the eigenvalues of
+    $\mathbf{K}^{\infty}$ decrease rapidly with the frequency of the
+    associated eigenvector: high-frequency components of the target function
+    project predominantly onto small-$\lambda_k$ modes and are therefore
+    acquired much later during training.  This frequency-ordered learning is
+    known as \emph{spectral bias} \cite{rahaman2019}.
+\end{remark}
+
+\begin{remark}[Finite-width and PINN extensions]
+    For finite-width networks $\mathbf{K}(\theta(t))$ evolves during training
+    (feature learning regime).  In the PINN setting the relevant kernel is
+    that of the composite map $t\mapsto\hat{z}'(t;\theta)-
+    \mathcal{F}(t,\hat{z}(t;\theta))$, whose spectrum governs convergence of
+    each frequency component of the ODE residual.
+\end{remark}
+
+\begin{remark}[NTK of the ODE data-smoothing estimator]
+We derive the NTK of the ODE data-smoothing approach and contrast it with the
+PINN NTK to explain why spectral bias is absent in the former.
+
+\medskip
+\noindent\textbf{Step 1 — identify parameters and outputs.}
+In the data-smoothing problem the optimisation variable is the control
+$u\in L^2([t_0,T])$, discretised as $\mathbf{u}=(u_1,\ldots,u_N)\in\mathbb{R}^N$
+with $u_i=u(t_i)$.  The model output is the trajectory
+$\mathbf{y}(\mathbf{u})=(y(t_1;\mathbf{u}),\ldots,y(t_N;\mathbf{u}))$
+obtained by integrating
+\begin{equation}
+    \dot{y}(t)=\mathcal{F}(t,y(t))+u(t),\qquad y(t_0)=y_0.
+\end{equation}
+
+\medskip
+\noindent\textbf{Step 2 — compute the Jacobian.}
+Perturb $u_j\mapsto u_j+\varepsilon$ at a single collocation point $t_j$.
+The state $y$ is perturbed by $\varepsilon$ at time $t_j$ and this perturbation
+propagates forward through the linearised ODE
+$\dot{\delta y}=(\partial\mathcal{F}/\partial y)\,\delta y$.  The sensitivity is
+therefore given by the \emph{state-transition matrix} $\Phi(t,s)$ of the
+linearised system:
+\begin{equation}
+    J_{ij} := \frac{\partial y(t_i;\mathbf{u})}{\partial u_j}
+    = \begin{cases}\Phi(t_i,t_j)\,\Delta t & t_j \le t_i,\\ 0 & t_j > t_i.\end{cases}
+\end{equation}
+The Jacobian $J\in\mathbb{R}^{N\times N}$ is therefore \emph{lower triangular}.
+
+\medskip
+\noindent\textbf{Step 3 — form the NTK.}
+The empirical NTK is $\mathbf{K}=JJ^{\top}$, with entries
+\begin{equation}
+    \mathbf{K}_{ij}
+    = \sum_{k\,:\,t_k\le\min(t_i,t_j)}
+      \Phi(t_i,t_k)\,\Phi(t_j,t_k)\,(\Delta t)^2.
+\end{equation}
+This is the \emph{Gramian of the state-transition matrix}: a symmetric,
+positive semi-definite matrix whose entries depend only on the ODE dynamics,
+not on any neural-network architecture.
+
+\medskip
+\noindent\textbf{Step 4 — the near-identity limit.}
+For the forced linear ODE $\dot{y}=-\alpha y+u$, the transition matrix is
+$\Phi(t_i,t_k)=e^{-\alpha(t_i-t_k)}$.
+As damping $\alpha\to 0$ or grid spacing $\Delta t\to 0$,
+$\Phi(t_i,t_k)\to\delta_{ik}$ and hence
+\begin{equation}
+    \mathbf{K} \;\to\; \Delta t\cdot I_N.
+\end{equation}
+In this limit every eigenvalue of $\mathbf{K}$ equals $\Delta t$: all modes are
+updated at \emph{identical} speed.
+
+\medskip
+\noindent\textbf{Step 5 — why there is no spectral bias.}
+Even away from the identity limit, the eigenvalues of $\mathbf{K}$ are
+determined by the ODE dynamics and are \emph{not ordered by frequency}.
+Contrast this with the PINN NTK, whose eigenvalues decay systematically with
+frequency because the finite-dimensional NN parametrisation creates an
+architectural bottleneck: high-frequency functions require small-eigenvalue
+modes of the NTK to be excited and are therefore learned last.
+In the data-smoothing approach the control $\mathbf{u}$ is a free variable in
+$\mathbb{R}^N$ — there is no such bottleneck — so every frequency component
+of the residual can be corrected at every step, and no spectral bias arises.
+\end{remark}
+
+% ---------------------------------------------------------------------------
+\section{Mitigating Spectral bias}
 
 \section{Experiments}
 
 \subsection{}
+
+\begin{thebibliography}{9}
+    \bibitem{jacot2018}
+        A.\ Jacot, F.\ Gabriel, and C.\ Hongler,
+        \emph{Neural tangent kernel: convergence and generalization in neural
+        networks}, NeurIPS, 2018.
+    \bibitem{rahaman2019}
+        N.\ Rahaman et al.,
+        \emph{On the spectral bias of neural networks},
+        ICML, 2019.
+    \bibitem{li2018oc}
+        Q.\ Li and S.\ Hao,
+        \emph{An optimal control approach to deep learning and applications to
+        discrete-weight neural networks}, ICML, 2018.
+    \bibitem{raissi2019}
+        M.\ Raissi, P.\ Perdikaris, and G.\ Karniadakis,
+        \emph{Physics-informed neural networks: a deep learning framework for
+        solving forward and inverse problems involving nonlinear partial
+        differential equations}, J.\ Comput.\ Phys., 378, 2019.
+\end{thebibliography}
 
 \end{document}
