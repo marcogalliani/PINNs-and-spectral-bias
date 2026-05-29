@@ -3,6 +3,9 @@ This repo aims at investigating the spectral bias phenomenon in neural network t
 
 Moreover, the repo aims at comparing PINNs to physics-informed statistical methods.
 
+## Limitations
+The kind of physics considered throught the repo is represented by systems of Ordinary Differential Equations.
+
 ## Code structure
 - `src`: general utilities
 - `examples`: python or R scripts to showcase intersiting phenomena
@@ -18,10 +21,13 @@ Moreover, the repo aims at comparing PINNs to physics-informed statistical metho
 - compile the [excel](https://polimi365-my.sharepoint.com/:x:/g/personal/10377072_polimi_it/IQD2GT5XbdOOTISRbIGbkPxwAW_hWJJGU7GOY6jibJw6p80?e=0AmdPJ) with project title 
 
 ## Ideas
-- The eigenvalues of the Neural Tangent Kernel seems to govern how the PINN learn a function, namely which frequencies are learned first. It seems that the Optimal Control Approach to solve the regularized problem presents the same learning behaviour (in fact, [Li et al, 2018]() shows that the NNs learning problem can be formulated as Optimal Control Problem). The idea is to see how the same concept of NTK applies to the optimal control approach.
-- Implement revised approaches to mitigate the spectral bias
-- Approaches:
+- The eigenvalues of the Neural Tangent Kernel seems to govern how the PINN learn a function, namely which frequencies are learned first. It seems that the Optimal Control Approach to solve the regularized problem presents the same learning behaviour (in fact, [Li et al, 2018]() shows that the NNs learning problem can be formulated as Optimal Control Problem). The idea is to see how the same concept of NTK applies to the optimal control approach. 
+
+- The Optimal Control Approach used to solve ODEs seems to be actually more similar to Neural ODEs. See how the NTK concept applies to Neural ODE and check if the same concept applies to the OCP approach
+
+- Implement revised approaches to mitigate the spectral bias. Approaches:
   - fourier features
   - siren
-  - neural ODE
-  - 
+  - NTK weighted training
+
+- 
