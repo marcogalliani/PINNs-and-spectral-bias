@@ -1,15 +1,15 @@
 # PINNs-and-spectral-bias
 This repo aims at investigating the spectral bias phenomenon in neural network training with a particular focus on how the issue translates to Physics-Informed NN architectures. 
 
-Moreover, the repo aims at comparing PINNs to physics-informed statistical methods.
+Moreover, the repo aims at comparing PINNs to physics-informed statistical methods, under the Reproducing Kernel Hilbert Space framework.
 
 ## Limitations
-The kind of physics considered throught the repo is represented by systems of Ordinary Differential Equations.
+The kind of physics considered throughout the repo is represented by systems of Ordinary Differential Equations.
 
 ## Code structure
 - `src`: general utilities
 - `examples`: python or R scripts to showcase intersiting phenomena
-- `docs`: papers and documentation
+- `docs`: papers and documentation, including a report and a slide deck to present our findings
 
 ## Submodules
 - `ode-fit`: my repo implemening ODE smoothing
@@ -30,4 +30,4 @@ The kind of physics considered throught the repo is represented by systems of Or
   - siren
   - NTK weighted training
 
-- 
+- Compare the kernel provided by NTK to the kernel in a RHKS framework
