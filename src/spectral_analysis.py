@@ -1,5 +1,5 @@
 import numpy as np
-
+import torch
 
 def compute_fft(signal, sample_rate):
     n = len(signal)
@@ -42,7 +42,6 @@ def compute_ntk(model, t_eval, *, device=None, transform=None):
     -------
     K : ndarray (N, N), symmetric positive semi-definite
     """
-    import torch
 
     t_eval = np.asarray(t_eval, dtype=np.float32)
     N = len(t_eval)
@@ -68,7 +67,7 @@ def compute_ntk(model, t_eval, *, device=None, transform=None):
         J[i] = np.concatenate(
             [p.grad.detach().cpu().numpy().ravel() if p.grad is not None
              else np.zeros(p.numel())
-             for p in params]
+             for p in params] #p.grad computes df/dp for single output models
         )
 
     model.zero_grad()
