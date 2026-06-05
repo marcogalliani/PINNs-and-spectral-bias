@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .PINNs import TrainingConfig, TrainingFrame
+from PINNs import TrainingConfig, TrainingFrame
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,6 @@ class SIREN(nn.Module):
     SINusoidal REpresentation Network  t (scalar) -> z(t) (n_vars-dimensional).
 
     Architecture: SirenLayer stack with a final linear head (no sine on output).
-    Training and analysis interface is identical to PINN in PINNs.py.
     """
 
     def __init__(self, config: SIRENConfig) -> None:

@@ -1,26 +1,26 @@
 import numpy as np
 
-def euler_solve(rhs_fn, y0, times):
+def euler_solve(rhs_fn, y0, times, args=()):
     ns, nv = len(times), len(y0)
     y = np.zeros((ns, nv))
     y[0] = y0
     for i in range(ns - 1):
         dt = times[i + 1] - times[i]
-        y[i + 1] = y[i] + dt * np.array(rhs_fn(times[i], y[i]))
+        y[i + 1] = y[i] + dt * np.array(rhs_fn(times[i], y[i], *args))
     return y
 
 
-def rk4_solve(rhs_fn, y0, times):
+def rk4_solve(rhs_fn, y0, times, args=()):
     ns, nv = len(times), len(y0)
     y = np.zeros((ns, nv))
     y[0] = y0
     for i in range(ns - 1):
         dt = times[i + 1] - times[i]
         t = times[i]
-        k1 = np.array(rhs_fn(t, y[i]))
-        k2 = np.array(rhs_fn(t + dt / 2, y[i] + dt / 2 * k1))
-        k3 = np.array(rhs_fn(t + dt / 2, y[i] + dt / 2 * k2))
-        k4 = np.array(rhs_fn(t + dt, y[i] + dt * k3))
+        k1 = np.array(rhs_fn(t, y[i], *args))
+        k2 = np.array(rhs_fn(t + dt / 2, y[i] + dt / 2 * k1, *args))
+        k3 = np.array(rhs_fn(t + dt / 2, y[i] + dt / 2 * k2, *args))
+        k4 = np.array(rhs_fn(t + dt, y[i] + dt * k3, *args))
         y[i + 1] = y[i] + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
     return y
 
