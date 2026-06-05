@@ -5,3 +5,5 @@
 *.pdf
 
 __pycache__/
+
+my_project.egg-info/
