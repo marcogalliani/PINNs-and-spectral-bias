@@ -86,7 +86,6 @@ def sin_expectations(Cov):
     Ecc = 0.5 * (np.exp(c - half) + np.exp(-c - half))
     return Ess, Ecc
 
-# TODO: add variant for SIREN, it is an intrisecally different architecture
 def infinite_width_ntk(t_grid, depth, expectation_fn, sigma_w2=1.0, sigma_b2=0.2):
     """Deterministic NTK of an infinitely wide MLP
     
@@ -196,10 +195,6 @@ def main():
     # ODE: first-order, we just need the rhs to define it
     def ode_rhs(t, y, sin_fn=np.sin):
         return sinusoidal_signal(t, AMPS, FREQS, PHASES, sin_fn)
-
-    # torch-valued rhs for the autodiff PINN NTK (PINN.ntk / SIREN.ntk)
-    def ode_rhs_torch(t, z):
-        return sinusoidal_signal(t, AMPS, FREQS, PHASES, torch.sin)
 
     y_rk4 = rk4_solve(ode_rhs, [0.0], t_grid, args=(np.sin,))
     plt.plot(t_grid, y_rk4)

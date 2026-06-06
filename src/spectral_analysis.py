@@ -196,3 +196,149 @@ def condition_ntk_on_operator(
 
     return Gram
 
+# Infinite-width NTK
+# Utilities to compute infinite-width kernels
+# Expectations, computed using Gaussian-Hermite quadrature
+# E[f(u)f(v)] where (u,v) ~ N(0,Cov)
+#
+# Reparametrisation trick: (u,v) are reparametrised in terms of 
+# independent variables (x,y)
+# u = sigma_u * x
+# v = sigma_v (rho * x + sqrt(1 - rho^2) * y)
+
+# tanh activation function
+def tanh_expectations(Cov, n_gh_pts = 20):
+    """
+    E[tanh(u)tanh(v)] and 
+    E[tanh'(u)tanh'(v)] 
+    for (u,v)~N(0,Λ), elementwise over a grid.
+    
+    Parameters:
+    -----------
+    - Cov: np.ndarray
+        covariance matrix of preactivations, preactivations are assumed
+        centred in 0
+    """
+    var = np.diag(Cov)
+    # convert to correlation matrix
+    sd = np.sqrt(np.clip(var, 1e-30, None))
+    rho = np.clip(Cov / np.outer(sd, sd), -1.0, 1.0)
+    # pearson coefficients
+    comp = np.sqrt(np.clip(1.0 - rho ** 2, 0.0, None))
+    Ess = np.zeros_like(Cov) # init E[tanh(u)tanh(v)]
+    Edd = np.zeros_like(Cov) # init E[tanh'(u)tanh'(v)]
+    # Gaussian-Hermite quadrature: points and weights
+    ghx, ghw = np.polynomial.hermite.hermgauss(n_gh_pts)
+    for p in range(n_gh_pts):
+        u = sd[:, None] * ghx[p]; 
+        tu = np.tanh(u); du = 1.0 - tu ** 2 # activ. and derivative
+        for q in range(n_gh_pts):
+            v = sd[None, :] * (rho * ghx[p] + comp * ghx[q]); 
+            w = ghw[p] * ghw[q]
+            Ess += w * tu * np.tanh(v)
+            Edd += w * du * (1.0 - np.tanh(v) ** 2)
+    return (Ess + Ess.T) / 2.0, (Edd + Edd.T) / 2.0
+
+# sin activation function (SIREN)
+# here the analytical solution is used (no GH quadrature needed)
+def sin_expectations(Cov):
+    """
+    Expectations:
+    E[sin u sin v]=e^{-(a+b)/2}sinh(c) and
+    E[sin'u sin'v]=E[cos u cos v]=e^{-(a+b)/2}cosh(c)
+    
+    where a = Var(u), b = Var(v), c = Cov(u,v)
+    
+    Parameters:
+    -----------
+    - Cov: np.ndarray
+        covariance matrix of preactivations, preactivations are assumed
+        centred in 0
+    """
+    var = np.diag(Cov)
+    
+    a = var[:, None]; b = var[None, :]; c = Cov
+    half = (a + b) / 2.0
+    Ess = 0.5 * (np.exp(c - half) - np.exp(-c - half))
+    Ecc = 0.5 * (np.exp(c - half) + np.exp(-c - half))
+    return Ess, Ecc
+
+def infinite_width_ntk(t_grid, depth, expectation_fn, sigma_w2=1.0, sigma_b2=0.2):
+    """Deterministic NTK of an infinitely wide MLP
+    
+    Parameters:
+    ----------
+    - t: 
+        time grid
+    - depth: float
+        depth of the MLP
+    - expectation_fn: 
+        function returning E[f(u)f(v)] and E[f'(u)f'(v)] for a specific
+        activation function f
+    - sigma_w2
+    - sigma_b2
+    """
+    X = np.asarray(t_grid, dtype=float).reshape(-1, 1)
+    Sigma = sigma_w2 * (X @ X.T) + sigma_b2          # Σ^(1)
+    Theta = Sigma.copy()                              # Θ^(1)
+    for _ in range(depth - 1):
+        Ess, Edd = expectation_fn(Sigma)
+        Sigma = sigma_w2 * Ess + sigma_b2            # Σ^(l+1)
+        Theta = Sigma + Theta * (sigma_w2 * Edd)     # Θ^(l+1)
+    return Theta
+
+
+def infinite_width_ntk_fourier(t_grid, depth, expectation_fn, ff_freqs, sigma_w2=0.5, sigma_b2=0.05):
+    """Deterministic NTK of an infinitely wide MLP
+    
+    Parameters:
+    ----------
+    - t: 
+        time grid
+    - depth: float
+        depth of the MLP
+    - expectation_fn: 
+        function returning E[f(u)f(v)] and E[f'(u)f'(v)] for a specific
+        activation function f
+    - ff_freqs
+    - sigma_w2
+    - sigma_b2
+    """
+    tt = np.asarray(t_grid, dtype=float)
+    ff_embeds = [np.sin(2*np.pi*f*tt) for f in ff_freqs] + [np.cos(2*np.pi*f*tt) for f in ff_freqs] + [tt]
+    Gram = np.stack(ff_embeds, 1)
+    # Covariance of the mapped features
+    Sigma = sigma_w2 * (Gram @ Gram.T) + sigma_b2          # Σ^(1)
+    # Same as standard infinite width kernel
+    Theta = Sigma.copy()                              # Θ^(1)
+    for _ in range(depth - 1):
+        Ess, Edd = expectation_fn(Sigma)
+        Sigma = sigma_w2 * Ess + sigma_b2            # Σ^(l+1)
+        Theta = Sigma + Theta * (sigma_w2 * Edd)     # Θ^(l+1)
+    return Theta
+
+def infinite_width_ntk_siren(t_grid, depth, expectation_fn, sigma_w2=600.0, sigma_b2=300.0, gw_hidden = 2.0):
+    """Deterministic NTK of an infinitely wide MLP
+    
+    Parameters:
+    ----------
+    - t: 
+        time grid
+    - depth: float
+        depth of the MLP
+    - expectation_fn: 
+        function returning E[f(u)f(v)] and E[f'(u)f'(v)] for a specific
+        activation function f
+    - sigma_w2
+    - sigma_b2
+    - gw_hidden
+    """
+    X = np.asarray(t_grid, dtype=float).reshape(-1, 1)
+    Sigma = sigma_w2 * (X @ X.T) + sigma_b2 
+    Theta = Sigma.copy()                              # Θ^(1)
+    for _ in range(depth - 2): #last layer is linear
+        Ess, Edd = expectation_fn(Sigma)
+        Sigma = gw_hidden * Ess
+        Theta = Sigma + Theta * (gw_hidden * Edd)     # Θ^(l+1)
+    Ess, _ = expectation_fn(Sigma)
+    return Ess + Theta
