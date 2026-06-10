@@ -6,7 +6,9 @@ import numpy as np
 
 from PINNs import PINN, PINNConfig, TrainingConfig
 from SIRENs import SIREN, SIRENConfig
-from spectral_analysis import compute_ntk, condition_ntk_on_operator
+from spectral_analysis import compute_fft
+from spectral_analysis import infinite_width_ntk_fn, empirical_ntk_fn
+from spectral_analysis import eval_kernel_matrix, condition_kernel_autodiff
 from numerical_solvers import rk4_solve    
 
 import matplotlib.pyplot as plt
@@ -20,151 +22,10 @@ def sinusoidal_signal(t, amps, freqs, phases, sin_fn = np.sin):
     return sum(A * sin_fn(2 * np.pi * f * t + phi)
                 for A,f,phi in zip(amps, freqs, phases))
 
-# Utilities to compute infinite-width kernels
-# Expectations, computed using Gaussian-Hermite quadrature
-# E[f(u)f(v)] where (u,v) ~ N(0,Cov)
-#
-# Reparametrisation trick: (u,v) are reparametrised in terms of 
-# independent variables (x,y)
-# u = sigma_u * x
-# v = sigma_v (rho * x + sqrt(1 - rho^2) * y)
-
-# tanh activation function
-def tanh_expectations(Cov, n_gh_pts = 20):
-    """
-    E[tanh(u)tanh(v)] and 
-    E[tanh'(u)tanh'(v)] 
-    for (u,v)~N(0,Λ), elementwise over a grid.
-    
-    Parameters:
-    -----------
-    - Cov: np.ndarray
-        covariance matrix of preactivations, preactivations are assumed
-        centred in 0
-    """
-    var = np.diag(Cov)
-    # convert to correlation matrix
-    sd = np.sqrt(np.clip(var, 1e-30, None))
-    rho = np.clip(Cov / np.outer(sd, sd), -1.0, 1.0)
-    # pearson coefficients
-    comp = np.sqrt(np.clip(1.0 - rho ** 2, 0.0, None))
-    Ess = np.zeros_like(Cov) # init E[tanh(u)tanh(v)]
-    Edd = np.zeros_like(Cov) # init E[tanh'(u)tanh'(v)]
-    # Gaussian-Hermite quadrature: points and weights
-    ghx, ghw = np.polynomial.hermite.hermgauss(n_gh_pts)
-    for p in range(n_gh_pts):
-        u = sd[:, None] * ghx[p]; 
-        tu = np.tanh(u); du = 1.0 - tu ** 2 # activ. and derivative
-        for q in range(n_gh_pts):
-            v = sd[None, :] * (rho * ghx[p] + comp * ghx[q]); 
-            w = ghw[p] * ghw[q]
-            Ess += w * tu * np.tanh(v)
-            Edd += w * du * (1.0 - np.tanh(v) ** 2)
-    return (Ess + Ess.T) / 2.0, (Edd + Edd.T) / 2.0
-
-# sin activation function (SIREN)
-# here the analytical solution is used (no GH quadrature needed)
-def sin_expectations(Cov):
-    """
-    Expectations:
-    E[sin u sin v]=e^{-(a+b)/2}sinh(c) and
-    E[sin'u sin'v]=E[cos u cos v]=e^{-(a+b)/2}cosh(c)
-    
-    where a = Var(u), b = Var(v), c = Cov(u,v)
-    
-    Parameters:
-    -----------
-    - Cov: np.ndarray
-        covariance matrix of preactivations, preactivations are assumed
-        centred in 0
-    """
-    var = np.diag(Cov)
-    
-    a = var[:, None]; b = var[None, :]; c = Cov
-    half = (a + b) / 2.0
-    Ess = 0.5 * (np.exp(c - half) - np.exp(-c - half))
-    Ecc = 0.5 * (np.exp(c - half) + np.exp(-c - half))
-    return Ess, Ecc
-
-def infinite_width_ntk(t_grid, depth, expectation_fn, sigma_w2=1.0, sigma_b2=0.2):
-    """Deterministic NTK of an infinitely wide MLP
-    
-    Parameters:
-    ----------
-    - t: 
-        time grid
-    - depth: float
-        depth of the MLP
-    - expectation_fn: 
-        function returning E[f(u)f(v)] and E[f'(u)f'(v)] for a specific
-        activation function f
-    - sigma_w2
-    - sigma_b2
-    """
-    X = np.asarray(t_grid, dtype=float).reshape(-1, 1)
-    Sigma = sigma_w2 * (X @ X.T) + sigma_b2          # Σ^(1)
-    Theta = Sigma.copy()                              # Θ^(1)
-    for _ in range(depth - 1):
-        Ess, Edd = expectation_fn(Sigma)
-        Sigma = sigma_w2 * Ess + sigma_b2            # Σ^(l+1)
-        Theta = Sigma + Theta * (sigma_w2 * Edd)     # Θ^(l+1)
-    return Theta
-
-
-def infinite_width_ntk_fourier(t_grid, depth, expectation_fn, ff_freqs, sigma_w2=0.5, sigma_b2=0.05):
-    """Deterministic NTK of an infinitely wide MLP
-    
-    Parameters:
-    ----------
-    - t: 
-        time grid
-    - depth: float
-        depth of the MLP
-    - expectation_fn: 
-        function returning E[f(u)f(v)] and E[f'(u)f'(v)] for a specific
-        activation function f
-    - ff_freqs
-    - sigma_w2
-    - sigma_b2
-    """
-    tt = np.asarray(t_grid, dtype=float)
-    ff_embeds = [np.sin(2*np.pi*f*tt) for f in ff_freqs] + [np.cos(2*np.pi*f*tt) for f in ff_freqs] + [tt]
-    Gram = np.stack(ff_embeds, 1)
-    # Covariance of the mapped features
-    Sigma = sigma_w2 * (Gram @ Gram.T) + sigma_b2          # Σ^(1)
-    # Same as standard infinite width kernel
-    Theta = Sigma.copy()                              # Θ^(1)
-    for _ in range(depth - 1):
-        Ess, Edd = expectation_fn(Sigma)
-        Sigma = sigma_w2 * Ess + sigma_b2            # Σ^(l+1)
-        Theta = Sigma + Theta * (sigma_w2 * Edd)     # Θ^(l+1)
-    return Theta
-
-def infinite_width_ntk_siren(t_grid, depth, expectation_fn, sigma_w2=600.0, sigma_b2=300.0, gw_hidden = 2.0):
-    """Deterministic NTK of an infinitely wide MLP
-    
-    Parameters:
-    ----------
-    - t: 
-        time grid
-    - depth: float
-        depth of the MLP
-    - expectation_fn: 
-        function returning E[f(u)f(v)] and E[f'(u)f'(v)] for a specific
-        activation function f
-    - sigma_w2
-    - sigma_b2
-    - gw_hidden
-    """
-    X = np.asarray(t_grid, dtype=float).reshape(-1, 1)
-    Sigma = sigma_w2 * (X @ X.T) + sigma_b2 
-    Theta = Sigma.copy()                              # Θ^(1)
-    for _ in range(depth - 2): #last layer is linear
-        Ess, Edd = expectation_fn(Sigma)
-        Sigma = gw_hidden * Ess
-        Theta = Sigma + Theta * (gw_hidden * Edd)     # Θ^(l+1)
-    Ess, _ = expectation_fn(Sigma)
-    return Ess + Theta
+def dominant_freq(signal, sample_rate):
+    """Dominant Fourier frequency of a signal."""
+    frqs, spec = compute_fft(signal, sample_rate)
+    return frqs[1:][np.argmax(spec[1:])]
 
 def main():
     # ---SETUP---
@@ -191,6 +52,7 @@ def main():
     T_0 = 0.0; T_F = 2.0
     N_GRID = 500
     t_grid = np.linspace(T_0, T_F, N_GRID, dtype=np.float32)
+    sample_rate = N_GRID / (T_F - T_0)
     
     # ODE: first-order, we just need the rhs to define it
     def ode_rhs(t, y, sin_fn=np.sin):
@@ -230,23 +92,22 @@ def main():
     ntk_matrices    = {}
     ntk_eigenvalues = {}
     ntk_eigenvectors = {}
-    
-    def ode_diff_op(f,t_grid):
-        h = float(t_grid[1] - t_grid[0]) # assuming uniform grid
-        return np.gradient(f, h) 
 
     for name, model in MODELS.items():
         print(f"  {name}...", end=" ", flush=True)
-        K = compute_ntk(model, t_grid, device=DEVICE)
+        # empirical NTK as a differentiable kernel function k(t, t') -- same
+        # interface as the infinite-width path (autodiff base + conditioning)
+        kfn = empirical_ntk_fn(model, dtype=torch.float32)
+        K = eval_kernel_matrix(kfn, t_grid, dtype=torch.float32)
         vals, vecs = np.linalg.eigh(K)
         ntk_matrices[name]     = K
         ntk_eigenvalues[name]  = vals[::-1].copy()
         ntk_eigenvectors[name] = vecs[:, ::-1].copy()
         eff_rank = int((vals.sum() ** 2) / (vals ** 2).sum())   # participation ratio
         print(f"λ_max={vals[-1]:.2e}  λ_min={vals[vals > 0].min():.2e}  eff_rank≈{eff_rank}")
-        
-        print(f"Condition on linear op...", end=" ", flush=True)
-        K = condition_ntk_on_operator(K, t_grid, ode_diff_op)
+
+        print(f"Condition on linear op (autodiff)...", end=" ", flush=True)
+        K = condition_kernel_autodiff(kfn, t_grid, dtype=torch.float32)
         vals, vecs = np.linalg.eigh(K)
         ntk_matrices[name + " PINN"]     = K
         ntk_eigenvalues[name + " PINN"]  = vals[::-1].copy()
@@ -337,28 +198,29 @@ def main():
     ntk_inf_eigenvectors = {}
     
     
+    INF_KIND = {"Fourier MLP": "fourier", "SIREN": "siren"}
     for name, model in MODELS.items():
         print(f"  {name}...", end=" ", flush=True)
-        if name == "Fourier MLP":
-            K_inf_raw = infinite_width_ntk_fourier(t_grid, DEPTH, tanh_expectations, FOURIER_FREQS)
-        elif name == "SIREN":
-            K_inf_raw = infinite_width_ntk_siren(t_grid, DEPTH, sin_expectations)
-        else:
-            K_inf_raw = infinite_width_ntk(t_grid, DEPTH, tanh_expectations)
+        kind = INF_KIND.get(name, "mlp")
+        kfn = infinite_width_ntk_fn(DEPTH, kind=kind,
+                                    ff_freqs=FOURIER_FREQS if kind == "fourier" else None)
+        K_inf_raw = eval_kernel_matrix(kfn, t_grid)
         # rescale so λ_max matches the empirical MLP (NTK scale is parametrisation-dependent)
         lam_inf_max = np.linalg.eigvalsh(K_inf_raw)[-1]
-        K_inf = K_inf_raw * (ntk_eigenvalues["MLP (Tanh)"][0] / lam_inf_max)
+        scale = ntk_eigenvalues["MLP (Tanh)"][0] / lam_inf_max
+        K_inf = K_inf_raw * scale
         vals, vecs = np.linalg.eigh(K_inf)
         # store
         ntk_inf_matrices[name] = K_inf
         ntk_inf_eigenvalues[name] = vals[::-1].copy()
         ntk_inf_eigenvectors[name] = vecs[:, ::-1].copy()
-        
+
         eff_rank = int((vals.sum() ** 2) / (vals ** 2).sum())   # participation ratio
         print(f"λ_max={vals[-1]:.2e}  λ_min={vals[vals > 0].min():.2e}  eff_rank≈{eff_rank}")
-        
-        print(f"Condition on linear op...", end=" ", flush=True)
-        K_inf = condition_ntk_on_operator(K_inf, t_grid, ode_diff_op)
+
+        print(f"Condition on linear op (autodiff)...", end=" ", flush=True)
+        # L_t L_{t'} applied exactly by autodiff -> PSD, no finite-difference noise tail
+        K_inf = condition_kernel_autodiff(kfn, t_grid) * scale
         vals, vecs = np.linalg.eigh(K_inf)
         ntk_inf_matrices[name + " PINN"]     = K_inf
         ntk_inf_eigenvalues[name + " PINN"]  = vals[::-1].copy()
@@ -409,32 +271,30 @@ def main():
     plt.tight_layout()
     plt.savefig(FIGURES_DIR / "inf_ntk_kernel_slice.png", dpi=150, bbox_inches="tight")
     
-    # Kernel spectrum
-    # TODO: modify to plot eigenvalues vs frequency
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+    # Kernel spectrum: eigenvalue vs dominant frequency of the eigenvector
+    fig, ax = plt.subplots(figsize=(10,4))
     fig.suptitle("NTK Eigenvalue Spectra", fontsize=13)
 
     idx = np.arange(1, len(t_grid) + 1)
 
-    ax = axes[0]
     for name in ARCH_NAMES:
-        vals = ntk_inf_eigenvalues[name]
-        ax.semilogy(idx, vals, label=name, color=PALETTE[name], linewidth=1.4)
-    ax.set_xlabel("Eigenvalue index (descending)")
+        vals  = ntk_inf_eigenvalues[name]
+        freqs = np.array(
+            [dominant_freq(ntk_inf_eigenvectors[name][:, k],
+                           sample_rate) for k in range(ntk_inf_eigenvectors[name].shape[1])])
+        pos   = vals > 0   # drop the numerical noise tail (non-PSD float artifacts)
+        vals, freqs = vals[pos], freqs[pos]
+        sort_indices = np.argsort(freqs)
+        ax.plot(freqs[sort_indices], vals[sort_indices], label=name, color=PALETTE[name], alpha=0.7)
+    for f in FREQS:
+        ax.axvline(f, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
+    ax.set_yscale("log")
+    ax.set_xlim(0, max(FREQS) * 1.5)
+    ax.set_xlabel("Dominant frequency of eigenvector [Hz]")
     ax.set_ylabel("Eigenvalue  (log scale)")
-    ax.set_title("Spectrum")
+    ax.set_title("Spectrum  (small λ ↔ slow convergence)")
     ax.legend(fontsize=9)
 
-    ax = axes[1]
-    for name in ARCH_NAMES:
-        vals = ntk_inf_eigenvalues[name]
-        cum  = np.cumsum(vals) / vals.sum()
-        ax.plot(idx, cum, label=name, color=PALETTE[name], linewidth=1.4)
-    ax.axhline(0.95, color="gray", linestyle="--", linewidth=0.9, label="95 % trace")
-    ax.set_xlabel("Eigenvalue index (descending)")
-    ax.set_ylabel("Cumulative fraction of trace")
-    ax.set_title("Spectral energy distribution  (effective rank)")
-    ax.legend(fontsize=9)
 
     plt.tight_layout()
     plt.savefig(FIGURES_DIR / "inf_ntk_spectra.png", dpi=150, bbox_inches="tight")
